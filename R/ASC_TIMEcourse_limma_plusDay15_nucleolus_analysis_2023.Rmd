@@ -1,0 +1,464 @@
+---
+title: "ASC_TIMEcourse_limma_nucleolus_analysis"
+author: "Sarah Hp"
+date: "6/4/22"
+output: html_document
+---
+
+Calculate time effect for adipose stem cell differentiation to adipocytes via RNAseq. Here we extract the differentially expressed genes for Pro - D0, D0 - D3 and D3 - D15 for two donors.   Previously Pro, D0, D1, D3, and D9 were sequenced in triplicate for two independent donors (GSE176020).
+New samples: day15 floating and bulk RNAseq.  
+
+
+output files:
+ - adipogenesis_rpkm_tmm.tab
+ - adipogenesis_rpkm_tmm_means.tab
+ - nucleolus_adipogenesis_DE.tab
+
+intermediate files (merge of serveral experiments): 
+ - late_adipo_and_D1&D2_native_rnaseq.counts
+ - late_adipo_and_D1&D2_native_rnaseq_info.tab
+
+```{r warning=F, message=F, echo=F}
+#DE tools
+library(limma)
+library(edgeR)
+library(biomaRt) #annotation
+#plotting
+library(ggplot2)
+library(RUVSeq)
+#GO
+library(clusterProfiler)
+library(org.Hs.eg.db)
+#Data manipulation
+library(tidyr)
+library(dplyr)
+```
+
+
+```{r}
+read.geo <- function(file_url) {
+  con <- gzcon(url(file_url))
+  txt <- readLines(con)
+  return(read.delim(textConnection(txt), skip=1, header=T))
+}
+```
+
+# Merge  experiments
+Skip ahead to `Start analysis here` for DGE analysis from intermediate files.  
+
+## Load Donor 2 timecourse from GEO
+(with fractionally assigned multimapping alignments).  Then format the table. 
+
+```{r}
+d2_file = "https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE176020&format=file&file=GSE176020%5Fd13%5Frnaseq%2Emultim%2Ecounts%2Etxt%2Egz"
+d2_tab = read.geo(d2_file)
+colnames(d2_tab) =  gsub("output.01hisat.","", gsub(".sorted.bam","",colnames(d2_tab)))
+#head(d2_tab) #table is messy so I won't print it here
+```
+
+
+Load file with sample info and match sample information to columns in FC table
+```{r}
+d2_info = read.delim("../sample_info/donor2_info.csv", header=TRUE, stringsAsFactors = FALSE, sep = ",")
+#head(d2_info)
+
+#remove unnecessary columns from d2_info
+names(d2_info)[names(d2_info)=='Additional..fill.in.2.3.digits.code..max.5..construct.etc..'] = 'donor'
+names(d2_info)[names(d2_info)=='Replicate..fill.in.number.'] = 'biorep'
+names(d2_info)[names(d2_info)=='timept'] = 'time'
+d2_info = d2_info[c('sample_id','time','donor','biorep','Tube.Label')]
+
+#Checked that FC table and d2_info are in the same order
+#colnames(d2_tab)
+#d2_info$sample_id
+```
+
+## Load the Donor 1 timecourse: 
+And generate sample information from the bam file names
+```{r}
+d1_file = "https://www.ncbi.nlm.nih.gov/geo/download/?acc=GSE176020&format=file&file=GSE176020%5Fmar19%5Frnaseq%2Emultim%2Ecounts%2Etxt%2Egz"
+d1_tab = read.geo(d1_file)
+colnames(d1_tab) =  gsub("output.01hisat.","", gsub(".sorted.bam","",colnames(d1_tab)))
+head(d1_tab)
+
+#Remove the file system artefacts from the count column names to create a list of the libraries:
+sample_id = grep("[[:digit:]]",colnames(d1_tab), value = T)
+sample_id
+#Next create a sample table with information about samples and time points taken from the filenames.
+Tube.Label = gsub("\\..*_S[[:digit:]]+", "", sample_id)
+time = gsub(".*(KD|P)[43586]D?", "", gsub("_S.*","",sample_id))
+time = factor(gsub("NT","-2",time)) #match factors
+biorep = gsub(".*\\.(KD|P)", "P", gsub("(D[0139]|NT)_S.*","",sample_id))
+biorep =gsub("P3","P8",biorep) #fix biorep error
+donor = rep("D1G", 16)
+
+d1_info = data.frame(sample_id,time,donor,biorep,Tube.Label)
+d1_info
+```
+
+## Load New Samples (day 15)
+These are from the same donors
+
+```{r}
+day15_tab = read.delim("../02featureCounts/day15_bulk_v_float.counts", skip=1,header=T, stringsAsFactors = F)
+colnames(day15_tab) = gsub("output.01hisat.","", gsub(".sorted.bam","",colnames(day15_tab)))
+colnames(day15_tab)
+```
+
+```{r}
+day15_info = read.delim("../sample_info/day15_bulk_v_float_info.csv", header=T, sep=",")
+day15_info$sample_id = gsub("-",".", day15_info$sample_id)
+day15_info$time = factor(gsub("D","", day15_info$time))
+colnames(day15_info) = gsub("rep", "biorep", colnames(day15_info))
+#use cell_type column as experiment delimiter
+day15_info$exp = 3
+
+day15_info = day15_info[!(colnames(day15_info) %in% c("bio.condition"))]
+
+colnames(day15_info); day15_info$sample_id
+```
+Edits to day15 file to fit: 
+- remove D from time; add dash to donor
+- change column names: rep to biorep; cell_type to exp
+- remove researcher,  bio.condition
+
+## Merge read counts and sample info
+Merging the fc tables directly.  Merge sample information for d1 and d2; remove tube.label column, add exp column (since d1 and d2 have overlapping samples) and add separaion = bulk for these experiments.
+
+```{r}
+early = merge(d2_tab, d1_tab)
+colnames(early); dim(early)
+
+#Add experiment separator
+d2_info$exp = 2
+d1_info$exp = 1
+colnames(d2_info)
+colnames(d1_info)
+
+early_info = rbind(d2_info, d1_info)
+early_info$separation = "bulk"
+
+early_info = early_info[colnames(early_info) != "Tube.Label"]
+
+table(paste(early_info$time, early_info$donor, early_info$exp))
+```
+
+
+Merging in day15 now
+
+```{r}
+whole = merge(early, day15_tab)
+dim(whole)
+
+whole_info = rbind(early_info, day15_info)
+str(whole_info); tail(whole_info)
+```
+
+Save combined read counts so we don't need to do this again. 
+
+```{r}
+write.table(whole, "../03limma/late_adipo_and_D1&D2_native_rnaseq.counts", sep="\t", row.names = F)
+write.table(whole_info, "../03limma/late_adipo_and_D1&D2_native_rnaseq_info.tab", sep="\t", row.names = F)
+```
+
+# Start Analysis Here
+
+Load combined read counts from above 
+```{r read_in}
+whole = read.delim("../03limma/late_adipo_and_D1&D2_native_rnaseq.counts", sep="\t", check.names = F )
+whole_info = read.delim( "../03limma/late_adipo_and_D1&D2_native_rnaseq_info.tab", sep="\t")
+```
+
+
+## Make DGE object
+remove additional samples.  
+
+```{r}
+whole_info$time.donor = paste(whole_info$time, whole_info$donor, sep=".")
+whole_info$group = paste(whole_info$time.donor, whole_info$separation, sep=".")
+
+whole_ob = DGEList(counts=data.matrix(whole[grep("[[:digit:]]", colnames(whole))]),  
+                   genes= whole[c("Geneid", "Length")], samples = whole_info)
+rownames(whole_ob$counts) = whole_ob$genes$Geneid
+summary (whole_ob)
+```
+
+```{r message=FALSE}
+#Check column names are the same
+whole_ob$samples$sample_id
+colnames(whole_ob)
+```
+
+
+## Initial Plots
+
+Everything looks good. 1. MDSplot separates timepoints well 2. the RLE plot shows that median counts between libraries are 0, meaning library size and distribution is similar between libraries.  Therefore normalisation between experiments is not necessary.  
+```{r message=FALSE}
+plotMDS(whole_ob, labels = whole_ob$samples$time, gene.selection = "common")
+plotRLE(whole_ob$counts, outline=FALSE, col=whole_ob$samples$group, main="Before filtering")
+```
+## Filtering
+
+```{r}
+plotSmear(whole_ob, main = "Before Filtering")
+dim(whole_ob)
+
+filt_series = whole_ob[filterByExpr(whole_ob),, keep.lib.sizes=FALSE]
+dim(filt_series) #21174 genes kept (about 1k more genes that the timecourse to day9)
+#The filter is approxiamtely 10/ libsize in millions
+10/(median(whole_ob$samples$lib.size)/1000000) #0.245 minimum CPM 
+
+#sanity check that gene_names match up
+filt_series$counts[filt_series$genes$Geneid == "ENSG00000228630",] #HOTAIR
+filt_series$counts[filt_series$genes$Geneid == "ENSG00000132170",] #PPARG
+
+plotSmear(filt_series, main = "After Filtering") 
+```
+
+Donor vs donor this looks like very nice filtering (above, at any one time point some genes will be missing).  
+
+```{r}
+#Plot donor v donor -> a few low exression genes still but predominantly good filtering
+two_filt = filt_series
+two_filt$samples$group = as.factor(filt_series$samples$donor)
+plotSmear(two_filt, main = "After Filtering")
+```
+
+
+```{r}
+#library sizes are different, but relative log expression is
+#now ~ normally distributed within libraries
+plotRLE(filt_series$counts, outline=FALSE, 
+        col=filt_series$samples$group, main="After filtering")
+plotMDS(filt_series, labels = filt_series$samples$group, gene.selection = "common")
+```
+
+Because we're mainly interested in days Pro,0, 3 and 15 (bulk) I'm going to create a filter vector that eliminates genes that would drop out if we only used those samples.  The limma voom method requires adequate filtering of low counts genes to maintain conservative p-values.  
+
+```{r}
+short_ob = whole_ob[, whole_ob$samples$time %in% c(-2,0,3,15) &
+                       whole_ob$samples$separation == "bulk"]
+short_ob$samples
+strict_filt_genes = short_ob[filterByExpr(short_ob),, keep.lib.sizes=FALSE]$genes
+nrow(strict_filt_genes)
+```
+
+## Normalise
+```{r}
+filt_series = calcNormFactors(filt_series,method = "TMM")
+filt_series$samples$norm.factors
+plotRLE(cpm(filt_series$counts), outline=FALSE, 
+        col=filt_series$samples$group, main="After TMM normalisation (no libsize)")
+```
+
+Library size is approximately the same after CPM normalisation, but it still needs to be adjusted directly for library size:
+
+```{r}
+plotRLE(cpm(filt_series, normalized.lib.sizes = TRUE), outline=FALSE, 
+        col=filt_series$samples$group, main="After TMM normalisation (with libsize)")
+```
+
+## Annotate Gene Lists
+
+```{r}
+library(biomaRt)
+mart <- biomaRt::useMart(biomart = "ensembl",
+  dataset = "hsapiens_gene_ensembl",
+   host = "https://jan2019.archive.ensembl.org")
+annot = getBM(c("external_gene_name", "description", "ensembl_gene_id"), 
+              filters = "ensembl_gene_id",
+              values = filt_series$genes$Geneid,
+              mart = mart)
+
+head(annot, n=2); dim(annot)
+
+#Tidying up the annot table
+annot$description = gsub("\\[Source:.+\\]", "", annot$description)
+colnames(annot)[1] = "gene_name"
+
+#Add gene names to filt_series
+filt_series$genes = merge(filt_series$genes, annot, by.x= "Geneid", 
+                        by.y = "ensembl_gene_id", sort=FALSE)
+#head(filt_series$genes)
+#make sure length is numeric
+filt_series$genes$Length = as.numeric(filt_series$genes$Length)
+```
+
+## Calculate FPKM
+
+```{r}
+rpkm = as.data.frame(rpkm(filt_series, normalized.lib.sizes = T))
+rpkm$gene = rownames(rpkm)
+colnames(rpkm) = paste("day",filt_series$samples$group, "_rep",filt_series$samples$biorep, sep="")
+head(rpkm)
+
+rpkm = rpkm[order(colnames(rpkm))]
+
+format_rpkm = merge(filt_series$genes, rpkm,  
+                    by.x="Geneid", by.y = 'row.names',sort=FALSE)
+head(format_rpkm)
+```
+
+```{r}
+write.table(format_rpkm, sep='\t', row.names = FALSE,quote = F,
+            file="../03limma/adipogenesis_rpkm_tmm.tab")
+```
+
+
+
+```{r}
+filt_series$samples$time.donor = filt_series$samples$group 
+filt_series$samples$group = factor(paste("day",filt_series$samples$group, sep=""))
+group_rpkm = data.frame(rpkmByGroup(filt_series,normalize.lib.sizes=TRUE))
+
+colSums(group_rpkm)
+
+format_grpkm = merge(filt_series$genes, group_rpkm,  
+                    by.x="Geneid", by.y = 'row.names',sort=FALSE)
+head(format_grpkm)
+```
+
+```{r}
+rowMeans(format_grpkm[format_grpkm$gene_name == "PPARG",c(6:ncol(format_grpkm))])#expr matches the replicate table
+plotRLE(data.matrix(format_grpkm[6:ncol(format_grpkm)]), outline=FALSE)
+```
+
+```{r}
+write.table(format_grpkm, sep='\t', row.names = FALSE, quote=F,
+            file="../03limma/adipogenesis_rpkm_tmm_means.tab")
+```
+
+
+
+## Limma Log Normalisation
+```{r}
+filt_series$samples$group = filt_series$samples$time.donor
+norm_series = voom(filt_series, plot = TRUE)
+head(norm_series$design, n=2) #groups are time.donor
+summary(norm_series$E[,1])#log normlisation min -7, max 15
+```
+
+
+## Design
+
+```{r}
+#1 check the default design
+colnames(norm_series$design)
+head(filt_series$samples, n=2)
+
+pair_design = model.matrix(~0+filt_series$samples$group)
+colnames(pair_design) = paste("day", gsub("-",".",levels(filt_series$samples$group)), sep="")
+rownames(pair_design) = filt_series$samples$sample_id
+head(pair_design, n=2)
+```
+
+## Making a large time based model
+Using bulk day15 samples
+time_effect_donor1 + time_effect_donor2 was the pvalue used at 0.01 to select genes for dpgp
+
+```{r}
+pair_fit = lmFit(norm_series, design=pair_design)
+
+contrasts = makeContrasts(time_effect_donor1 = (day0.D1G.bulk - day.2.D1G.bulk ) + #D-2 -> D0 effect
+                                                  (day1.D1G.bulk - day0.D1G.bulk) + #D0 -> D1 effect
+                                                  (day3.D1G.bulk - day1.D1G.bulk) + #D1 -> D3 effect
+                                                  (day9.D1G.bulk - day3.D1G.bulk) + #D3 -> D9 effect 
+                                                  (day15.D1G.bulk - day9.D1G.bulk),
+                          time_effect_donor2 = (day0.D2A.bulk - day.2.D2A.bulk ) + #D-2 -> D0 effect
+                                                  (day1.D2A.bulk - day0.D2A.bulk) + #D0 -> D1 effect
+                                                  (day3.D2A.bulk - day1.D2A.bulk) + #D1 -> D3 effect
+                                                  (day9.D2A.bulk - day3.D2A.bulk) + #D3 -> D9 effect 
+                                                  (day15.D2A.bulk - day9.D2A.bulk), #D9 -> D15 effect
+                          simple_time_effect = (day0.D1G.bulk - day.2.D1G.bulk ) + #D-2 -> D0 effect
+                                                  (day3.D1G.bulk - day0.D1G.bulk) + #D0 -> D3 effect
+                                                  (day15.D1G.bulk - day3.D1G.bulk) + #D3 -> D15 effect
+                                                  (day0.D2A.bulk - day.2.D2A.bulk ) + #D-2 -> D0 effect
+                                                  (day3.D2A.bulk - day0.D2A.bulk) + #D1 -> D3 effect
+                                                  (day15.D2A.bulk - day3.D2A.bulk), #D9 -> D15 effect
+                          #Donor 7 changes over time
+                          d.2_to_d0.D1 = day0.D1G.bulk - day.2.D1G.bulk,
+                          d0_to_d1.D1 = day1.D1G.bulk - day0.D1G.bulk,
+                          d1_to_d3.D1 = day3.D1G.bulk - day1.D1G.bulk, 
+                          d3_to_d9.D1= day9.D1G.bulk - day3.D1G.bulk,
+                          d9_to_d15.D1.bulk =  day15.D1G.bulk - day9.D1G.bulk,
+                          d9_to_d15.D1.floating =  day15.D1G.floating - day9.D1G.bulk,
+                          d15.bulk_to_floating.D1 = day15.D1G.floating - day15.D1G.bulk,
+                          #Donor 13 changes over time
+                          d.2_to_d0.D2 = day0.D2A.bulk - day.2.D2A.bulk,
+                          d0_to_d1.D2 = day1.D2A.bulk - day0.D2A.bulk,
+                          d1_to_d3.D2 = day3.D2A.bulk - day1.D2A.bulk,
+                          d3_to_d9.D2 = day9.D2A.bulk - day3.D2A.bulk,
+                          d9_to_d15.D2.bulk =  day15.D2A.bulk - day9.D2A.bulk,
+                          d9_to_d15.D2.floating =  day15.D2A.floating - day9.D2A.bulk,
+                          d15.bulk_to_floating.D2 = day15.D2A.floating - day15.D2A.bulk,
+                          #And the additional timepoints
+                          d0_to_d3.D1 =  day3.D1G.bulk - day0.D1G.bulk,
+                          d0_to_d3.D2 =  day3.D2A.bulk - day0.D2A.bulk,
+                          d3_to_d15.D1 =  day15.D1G.bulk - day3.D1G.bulk,
+                          d3_to_d15.D2 =  day15.D2A.bulk - day3.D2A.bulk,
+                          levels=pair_design)
+special_fit = contrasts.fit(pair_fit,contrasts)
+special_fit = eBayes(special_fit, robust = TRUE)
+```
+
+```{r}
+summary(decideTests(special_fit, method="separate", adjust.method = "BH", p.value = 0.01)) #Adjusted for contrast
+summary(decideTests(special_fit ,method="global", adjust.method = "BH"), p.value= 0.01) #Unadjusted for contrast
+```
+
+Interesting, the time effect is less significant in donor2.  The time effect is similar rather than different between donors -> most genes respond similarly to the adipogenic cocktail, regardless of depot/donor.  Removing those extra timepoints (Day1, Day9), leads to ~6k genes found both up and down
+
+## Number of DE genes
+
+Adding an extra timepoint adds more genes to the DE list; 11,639 genes at p < 0.01 (basically 50% of all detected genes).  
+
+```{r}
+comb = topTable(special_fit, number = nrow(pair_fit$genes), coef = c("time_effect_donor1","time_effect_donor2"))
+dim(comb[comb$adj.P.Val < 0.05,]) #More than half of all genes change; most will be the same
+dim(comb[comb$adj.P.Val < 0.01,]) 
+
+volcanoplot(special_fit, coef = c(1,2), highlight =10, names = special_fit$genes$gene_name,
+            main="Time effect (combined across donors)", xlab="log2FC ABDO <---> GLUT")
+
+volcanoplot(special_fit, coef = c(1,2), highlight =11639, names = special_fit$genes$gene_name,
+            main="Time effect (combined across donors)", xlab="log2FC ABDO <---> GLUT")
+
+volcanoplot(special_fit, coef = c(1,2),
+            main="Time effect (combined across donors)", xlab="log2FC ABDO <---> GLUT")
+
+head(comb)
+```
+
+```{r}
+nuc = topTable(special_fit, number = nrow(pair_fit$genes), coef = "simple_time_effect")
+dim(nuc[nuc$adj.P.Val < 0.05,]) #More than half of all genes change; most will be the same
+dim(nuc[nuc$adj.P.Val < 0.01,]) 
+
+nuc = nuc[nuc$Geneid %in% strict_filt_genes$Geneid,] #We can filter out ~450 genes with low expression but "significant" at these timepoints
+nrow(nuc)
+
+head(nuc)
+```
+
+
+```{r eval=F}
+write.table(nuc,  sep="\t", row.names=FALSE, 
+            file.path("../03limma/nucleolus_adipogenesis_DE.tab"))
+```
+
+
+```{r}
+ggplot(nuc) + geom_histogram(aes(x=P.Value), bins=200)
+volcanoplot(special_fit, coef="simple_time_effect", highlight = 12, names = special_fit$genes$gene_name)
+```
+## Venn diagram of new and old lists
+```{r}
+res = decideTests(special_fit, method="separate", adjust.method = "BH", p.value = 0.01) #Adjusted for contrast
+
+vennDiagram(res[,c("simple_time_effect","time_effect_donor1", "time_effect_donor2")], include="up")
+
+vennDiagram(res[,c("simple_time_effect","time_effect_donor1", "time_effect_donor2")], include="down")
+```
+
+Okay, so there's about 500 unique genes is either direction discovered by this test (as opposed to the d1->d3->d9 tests).  We lose about the same number from either donor, but none that were in common between the donors, which seems promising.  It seems that we capture the bulk of the adipogenic changes with just timepoints Pro, 0, 3 and 15 :)
+
