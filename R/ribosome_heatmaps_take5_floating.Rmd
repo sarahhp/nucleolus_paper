@@ -1,0 +1,183 @@
+---
+title: "ribosome_heatmaps_take5_floating"
+author: "Sarah Hp"
+date: '2022-07-08'
+output: html_document
+---
+
+Check if we even need to subset the the gene lists by differential expression.  
+
+Showing bulk -> floating for donor 7 and 13. Rationale: to show the trend in differentiation -> day15 is because of the adipocytes in the population.  
+
+Maintain from previous heatmaps:
+printing lists of gene to annotate the terms/heatmaps
+focus on the ribosome (+biogenesis) and translation combined heatmap
+
+WARNING need to remove the MRPs specifically, because they're still included.  Hard to do it correctly cos of genes with similar symbols....
+
+
+```{r}
+library(biomaRt)
+library(ComplexHeatmap)
+knitr::opts_chunk$set(echo = TRUE, dev = c("pdf"), fig.path = "ribosome_heatmaps_take5_floating/", fig.dim = c(4, 8))
+```
+
+
+```{r}
+feb_dir = "C:/Users/sarahhp/OneDrive - Universitetet i Oslo/OUS/Feb22_RNAseq/03limma/"
+rpkm = read.table(file.path(feb_dir, "rpkm_tmm_means.csv"), header=T, sep=",") #rpkm table
+head(rpkm); dim(rpkm)
+
+combpval = read.table(file.path(feb_dir, "time_effect_perdonor.tab"), header=T)
+head(combpval)
+
+sig = merge(rpkm, combpval[c("gene_name","adj.P.Val")])
+head(sig); dim(sig)
+```
+
+
+```{r}
+#formatting
+#sig = sig[sig$adj.P.Val < 0.01,]
+sig$adj.P.Val = NULL
+#discard duplicate rownames
+sig = sig[!duplicated(sig$gene_name),]
+dim(sig)
+
+rownames(sig) = sig$gene_name
+sig$gene_name = NULL
+```
+
+Select day15s incl. floating adipocytes
+```{r}
+sig = sig[grepl("day_15", colnames(sig))]
+head(sig)
+#separate by donor (may not be necessary but its nice to have)
+d7 = sig[grep("D07.G", colnames(sig), value=T)]
+head(d7)
+d13 = sig[grep("D13.A", colnames(sig), value=T)]
+head(d13)
+```
+
+## Get GO terms
+
+```{r}
+mart <- biomaRt::useMart(biomart = "ensembl",
+  dataset = "hsapiens_gene_ensembl",
+  host = "https://jan2019.archive.ensembl.org")
+```
+
+
+Ribosome may not be necessary
+```{r}
+cyt_ribosome = biomaRt::getBM(c("external_gene_name", "ensembl_gene_id","go_linkage_type"), 
+              filters = "go",
+              values = c("GO:0022625","GO:0022627"),
+              mart = mart)
+length(unique(cyt_ribosome$ensembl_gene_id)) #120 cytosolic ribosome genes
+```
+
+
+```{r}
+ribogen = biomaRt::getBM(c("external_gene_name", "ensembl_gene_id","go_linkage_type"), 
+              filters = "go",
+              values = c("GO:0042254"),
+              mart = mart)
+length(unique(ribogen$ensembl_gene_id)) #104
+
+norp_ribogen = ribogen[!grepl("^M?RP", ribogen$external_gene_name),]
+length(unique(norp_ribogen$ensembl_gene_id)) #96
+```
+
+```{r}
+translation = getBM(c("external_gene_name", "ensembl_gene_id"), 
+              filters = "go",
+              values = "GO:0006412",
+              mart = mart)
+nrow(translation)
+
+norp_trans = translation[!grepl("^M?RP", translation$external_gene_name),]
+nrow(norp_trans) #165 non RP translation genes
+```
+
+
+# Combined graph
+
+## heatmap formatting
+```{r}
+colnames(sig) = gsub("day_15_","", colnames(sig))
+summary(sig)
+
+nrow(sig) #removing genes with no expression between these time points (about 82 genes)
+sig = sig[rowSums(sig) > 0,]
+nrow(sig)
+
+#create zscores of log transformed rpkms
+zs = t(scale(t(log2(sig+1))))
+ # before log scaling the median is always about -0.2, meaning theres a negative bias to the values
+summary(zs) # the median is more variable between timepoints upon log scaling
+
+#create vector for ordering
+#order = as.vector(zs[,"day15"] - zs[,"day.2"])
+order = apply(zs, 1, cor, y=1:ncol(zs)) #uses pearson correlation
+head(order)
+```
+
+```{r ribogen}
+Heatmap(as.matrix(zs[rownames(zs) %in% ribogen$external_gene_name,]),
+        cluster_columns = F,
+        name="Relative FPKM",
+        column_title = "Ribosome Biogenesis",
+        col=circlize::colorRamp2(c(-1.5,0,1.5),c(rgb(0.2,0.6,1),rgb(0,0,0),rgb(0.95,0.3,0.3))),
+        show_row_names = T, row_names_gp = gpar(fontsize=8),
+        row_dend_reorder = order[rownames(zs) %in% ribogen$external_gene_name], 
+        row_split=4, column_split = c("D07","D07","D13","D13"), column_gap = unit(3, "mm"),
+        )
+```
+
+```{r trans}
+Heatmap(as.matrix(zs[rownames(zs) %in% translation$external_gene_name,]),
+        cluster_columns = F,
+        name="Relative FPKM",
+        column_title = "Translation",
+        col=circlize::colorRamp2(c(-1.5,0,1.5),c(rgb(0.2,0.6,1),rgb(0,0,0),rgb(0.95,0.3,0.3))),
+        show_row_names = T, row_names_gp = gpar(fontsize=8),
+        row_dend_reorder = order[rownames(zs) %in% translation$external_gene_name], 
+        row_split=2, column_split = c("D07","D07","D13","D13"), column_gap = unit(3, "mm"))
+
+Heatmap(as.matrix(zs[rownames(zs) %in% translation$external_gene_name,]),
+        cluster_columns = F,
+        name="Relative FPKM",
+        column_title = "Translation",
+        col=circlize::colorRamp2(c(-1.5,0,1.5),c(rgb(0.2,0.6,1),rgb(0,0,0),rgb(0.95,0.3,0.3))),
+        show_row_names = T, row_names_gp = gpar(fontsize=8),
+        row_dend_reorder = order[rownames(zs) %in% translation$external_gene_name], 
+        row_split=3, column_split = c("D07","D07","D13","D13"), column_gap = unit(3, "mm"))
+```
+
+## RP
+```{r rps}
+
+Heatmap(as.matrix(zs[rownames(zs) %in% cyt_ribosome$external_gene_name,]),
+        cluster_columns = F,
+        name="Relative FPKM",
+        column_title = "Cytocolic Ribosomal Proteins",
+        col=circlize::colorRamp2(c(-1.5,0,1.5),c(rgb(0.2,0.6,1),rgb(0,0,0),rgb(0.95,0.3,0.3))),
+        show_row_names = T, row_names_gp = gpar(fontsize=8),
+        row_dend_reorder = order[rownames(zs) %in% cyt_ribosome$external_gene_name], 
+        column_split = c("D07","D07","D13","D13"), column_gap = unit(3, "mm"))
+
+
+Heatmap(as.matrix(zs[rownames(zs) %in% cyt_ribosome$external_gene_name,]),
+        cluster_columns = F,
+        name="Relative FPKM",
+        column_title = "Cytsolic Ribosomal Proteins",
+        col=circlize::colorRamp2(c(-1.5,0,1.5),c(rgb(0.2,0.6,1),rgb(0,0,0),rgb(0.95,0.3,0.3))),
+        show_row_names = T, row_names_gp = gpar(fontsize=8),
+        row_dend_reorder = order[rownames(zs) %in% cyt_ribosome$external_gene_name], 
+        row_split=3, column_split = c("D07","D07","D13","D13"), column_gap = unit(3, "mm"))
+```
+
+
+
+
