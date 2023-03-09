@@ -2,7 +2,7 @@
 title: "ASC_TIMEcourse_limma_nucleolus_analysis"
 author: "Sarah Hp"
 date: "6/4/22"
-output: html_document
+output: pdf_document
 ---
 
 Calculate time effect for adipose stem cell differentiation to adipocytes via RNAseq. Here we extract the differentially expressed genes for Pro - D0, D0 - D3 and D3 - D15 for two donors.   Previously Pro, D0, D1, D3, and D9 were sequenced in triplicate for two independent donors (GSE176020).
@@ -10,15 +10,17 @@ New samples: day15 floating and bulk RNAseq.
 
 
 output files:
+
  - adipogenesis_rpkm_tmm.tab
  - adipogenesis_rpkm_tmm_means.tab
  - nucleolus_adipogenesis_DE.tab
 
-intermediate files (merge of serveral experiments): 
+intermediate files (merge of several experiments): 
+
  - late_adipo_and_D1&D2_native_rnaseq.counts
  - late_adipo_and_D1&D2_native_rnaseq_info.tab
 
-```{r warning=F, message=F, echo=F}
+```{r warning=F, message=F}
 #DE tools
 library(limma)
 library(edgeR)
@@ -26,9 +28,6 @@ library(biomaRt) #annotation
 #plotting
 library(ggplot2)
 library(RUVSeq)
-#GO
-library(clusterProfiler)
-library(org.Hs.eg.db)
 #Data manipulation
 library(tidyr)
 library(dplyr)
