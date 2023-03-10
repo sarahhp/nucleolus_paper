@@ -1,0 +1,249 @@
+---
+title: "Rauch2019_to_heatmap"
+author: "Sarah Hp"
+date: "3/12/2020"
+output: pdf_document
+---
+
+```{r setup, message=FALSE}
+library(biomaRt)
+library(ComplexHeatmap)
+knitr::opts_chunk$set(echo = TRUE, dev = c("pdf"), fig.path = "Rauch2019_to_heatmap/", fig.dim = c(4, 8))
+```
+
+## Load count data from GEO and convert gene ids
+
+```{r}
+read.geo <- function(file_url) {
+  con <- gzcon(url(file_url))
+  txt <- readLines(con)
+  return(read.delim(textConnection(txt), header=T))
+}
+```
+
+
+```{r}
+rauch_file = "ftp://ftp.ncbi.nlm.nih.gov/geo/series/GSE113nnn/GSE113253/suppl/GSE113253%5FGeneExpr%5FAT%2Etxt%2Egz"
+
+expr = read.geo(rauch_file)
+#head(expr) 
+dim(expr)
+```
+
+### Match Rauch genes
+
+
+```{r id_match}
+mart <- biomaRt::useMart(biomart = "ensembl",
+  dataset = "hsapiens_gene_ensembl",
+  host = "ensembl.org")
+#look for GO filter
+head(searchFilters(mart = mart, pattern = ".ef.eq"), n=20)
+head(searchAttributes(mart = mart, pattern = ".ef.eq"), n=20)
+
+ens = getBM(c("external_gene_name", "ensembl_gene_id","refseq_mrna"), 
+              filters = "refseq_mrna",
+              values = expr$RefSeqID,
+              mart = mart)
+
+nrow(ens) #15644 id found
+length(unique(ens$ensembl_gene_id)) #15619 unique ensembl ids
+length(unique(ens$refseq_mrna)) #14589 unique refseqIDs
+
+nc_ens = getBM(c("external_gene_name", "ensembl_gene_id", "refseq_ncrna"), 
+              filters = "refseq_ncrna",
+              values = expr$RefSeqID,
+              mart = mart)
+
+nrow(nc_ens) #2487 ncrna
+length(unique(nc_ens$ensembl_gene_id)) #2478 unique ensembl ids
+length(unique(nc_ens$refseq_ncrna)) #2300 unique refseqIDs
+```
+
+```{r}
+#First combine mRNA and ncRNA
+colnames(ens) = c("gene_name","gene","RefSeqID")
+colnames(nc_ens) = c("gene_name","gene","RefSeqID")
+ids = rbind(ens, nc_ens)
+dim(ids)
+
+#Add ensembl Id column
+nexpr = merge(expr,ids, by="RefSeqID",all=F)
+dim(nexpr) #18132
+head(nexpr)
+```
+
+
+```{r save}
+write.table(nexpr, "../03limma/rauch2019_gene_list.tab", sep="\t",row.names=FALSE)
+```
+
+
+```{r load_saved_file}
+nexpr = read.delim("../03limma/rauch2019_gene_list.tab", header = T)
+dim(nexpr); colnames(nexpr)
+nexpr = nexpr[!duplicated(nexpr$gene_name),]
+rownames(nexpr) = nexpr$gene_name
+dim(nexpr)
+
+expr = nexpr[grepl("^NormAve_(14|3|1|Msc)", colnames(nexpr))]
+head(expr)
+colnames(expr ) = gsub("NormAve_", "", colnames(expr))
+head(as.matrix(expr))
+```
+
+## Get GO terms
+
+```{r}
+mart <- biomaRt::useMart(biomart = "ensembl",
+  dataset = "hsapiens_gene_ensembl",
+  host = "https://jan2019.archive.ensembl.org")
+```
+
+```{r}
+ribogen = biomaRt::getBM(c("external_gene_name", "ensembl_gene_id","go_linkage_type"), 
+              filters = "go",
+              values = c("GO:0042254"),
+              mart = mart)
+length(unique(ribogen$ensembl_gene_id)) #104
+
+norp_ribogen = ribogen[!grepl("^M?RP", ribogen$external_gene_name),]
+length(unique(norp_ribogen$ensembl_gene_id)) #96
+```
+
+```{r}
+translation = getBM(c("external_gene_name", "ensembl_gene_id"), 
+              filters = "go",
+              values = "GO:0006412",
+              mart = mart)
+nrow(translation)
+
+norp_trans = translation[!grepl("^M?RP", translation$external_gene_name),]
+nrow(norp_trans) #165 non RP translation genes
+```
+```{r}
+cyt_ribosome = biomaRt::getBM(c("external_gene_name", "ensembl_gene_id","go_linkage_type"), 
+              filters = "go",
+              values = c("GO:0022625","GO:0022627"),
+              mart = mart)
+length(unique(cyt_ribosome$ensembl_gene_id)) #120 cytosolic ribosome genes
+```
+
+## Format and scale
+```{r}
+summary(expr)
+
+zs = t(scale(t(log2(expr+1))))
+summary(zs)
+
+#create vector for ordering
+order = apply(zs, 1, cor, y=1:ncol(zs)) #uses pearson correlation
+head(order)
+length(order)
+```
+## Supp Figure 6c - Ribosomal Proteins
+
+```{r FigureS6c}
+Heatmap(as.matrix(zs[rownames(zs) %in% cyt_ribosome$external_gene_name,]),
+        cluster_columns = F,
+        name="Relative FPKM",
+        column_title = "Cytoslic Ribosome",
+        col=circlize::colorRamp2(c(-3,0,3),c(rgb(0.2,0.6,1),rgb(0,0,0),rgb(0.95,0.3,0.3))),
+        show_row_names = T, row_names_gp = gpar(fontsize=8),
+        row_dend_reorder = order[rownames(zs) %in% cyt_ribosome$external_gene_name],
+        row_split=3
+        )
+```
+
+### Do translation genes also increase expr. in Rauch2019?
+
+```{r ribogen}
+Heatmap(as.matrix(zs[rownames(zs) %in% ribogen$external_gene_name,]),
+        cluster_columns = F,
+        name="Relative FPKM",
+        column_title = "Ribosome Biogenesis",
+        col=circlize::colorRamp2(c(-3,0,3),c(rgb(0.2,0.6,1),rgb(0,0,0),rgb(0.95,0.3,0.3))),
+        show_row_names = T, row_names_gp = gpar(fontsize=8),
+        row_dend_reorder = order[rownames(zs) %in% ribogen$external_gene_name],
+        row_split=2
+        )
+
+Heatmap(as.matrix(zs[rownames(zs) %in% ribogen$external_gene_name,]),
+        cluster_columns = F,
+        name="Relative FPKM",
+        column_title = "Ribosome Biogenesis",
+        col=circlize::colorRamp2(c(-3,0,3),c(rgb(0.2,0.6,1),rgb(0,0,0),rgb(0.95,0.3,0.3))),
+        show_row_names = T, row_names_gp = gpar(fontsize=8),
+        row_dend_reorder = order[rownames(zs) %in% ribogen$external_gene_name],
+        row_split=4
+        )
+```
+
+Large part of ribosome biogenesis genes peak 4h after Diff onset, but the top cluster has higher expression later in diff.  
+
+Translation cluster 2 and 3 have later adipogenic specific activation, including RPs and elongation factors.
+
+```{r translation}
+Heatmap(as.matrix(zs[rownames(zs) %in% translation$external_gene_name,]),
+        cluster_columns = F,
+        name="Relative FPKM",
+        column_title = "Translation",
+        col=circlize::colorRamp2(c(-3,0,3),c(rgb(0.2,0.6,1),rgb(0,0,0),rgb(0.95,0.3,0.3))),
+        show_row_names = T, row_names_gp = gpar(fontsize=8),
+        row_dend_reorder = order[rownames(zs) %in% translation$external_gene_name],
+        row_split=3
+        )
+
+Heatmap(as.matrix(zs[rownames(zs) %in% translation$external_gene_name,]),
+        cluster_columns = F,
+        name="Relative FPKM",
+        column_title = "Translation",
+        col=circlize::colorRamp2(c(-3,0,3),c(rgb(0.2,0.6,1),rgb(0,0,0),rgb(0.95,0.3,0.3))),
+        show_row_names = T, row_names_gp = gpar(fontsize=8),
+        row_dend_reorder = order[rownames(zs) %in% translation$external_gene_name],
+        row_split=4
+        )
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

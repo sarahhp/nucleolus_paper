@@ -1,0 +1,151 @@
+---
+title: "ribosome_heatmaps_bulk_v_floating"
+author: "Sarah Hp"
+date: '2022-07-08'
+output: pdf_document
+---
+
+
+Showing bulk -> floating for donor 7 and 13. Rationale: to show the trend in differentiation -> day15 is because of the adipocytes in the population.  
+
+Maintain from previous heatmaps:
+printing lists of gene to annotate the terms/heatmaps
+
+
+```{r}
+library(biomaRt)
+library(ComplexHeatmap)
+knitr::opts_chunk$set(echo = TRUE, dev = c("pdf"), fig.path = "ribosome_heatmaps_bulk_v_floating/", fig.dim = c(4, 8))
+```
+
+
+```{r}
+rpkm = read.delim( "../03limma/adipogenesis_rpkm_tmm_means.tab", header=T) #rpkm table
+head(rpkm); dim(rpkm)
+
+#discard duplicate rownames
+rpkm = rpkm[!duplicated(rpkm$gene_name),]
+dim(rpkm)
+
+rownames(rpkm) = rpkm$gene_name
+rpkm$gene_name = NULL
+```
+
+Select day15s incl. floating adipocytes
+```{r}
+rpkm = rpkm[grepl("day15", colnames(rpkm))]
+head(rpkm)
+```
+
+## Get GO terms
+
+```{r}
+mart <- biomaRt::useMart(biomart = "ensembl",
+  dataset = "hsapiens_gene_ensembl",
+  host = "https://jan2019.archive.ensembl.org")
+```
+
+
+Ribosome may not be necessary
+```{r}
+cyt_ribosome = biomaRt::getBM(c("external_gene_name", "ensembl_gene_id","go_linkage_type"), 
+              filters = "go",
+              values = c("GO:0022625","GO:0022627"),
+              mart = mart)
+length(unique(cyt_ribosome$ensembl_gene_id)) #120 cytosolic ribosome genes
+```
+
+
+```{r}
+ribogen = biomaRt::getBM(c("external_gene_name", "ensembl_gene_id","go_linkage_type"), 
+              filters = "go",
+              values = c("GO:0042254"),
+              mart = mart)
+length(unique(ribogen$ensembl_gene_id)) #104
+
+norp_ribogen = ribogen[!grepl("^M?RP", ribogen$external_gene_name),]
+length(unique(norp_ribogen$ensembl_gene_id)) #96
+```
+
+```{r}
+translation = getBM(c("external_gene_name", "ensembl_gene_id"), 
+              filters = "go",
+              values = "GO:0006412",
+              mart = mart)
+nrow(translation)
+
+norp_trans = translation[!grepl("^M?RP", translation$external_gene_name),]
+nrow(norp_trans) #165 non RP translation genes
+```
+
+# Combined graph
+
+## heatmap formatting
+```{r}
+colnames(rpkm) = gsub("day15.","", colnames(rpkm))
+summary(rpkm)
+
+nrow(rpkm) #removing genes with no expression between these time points (about 82 genes)
+rpkm = rpkm[rowSums(rpkm) > 0,]
+nrow(rpkm)
+
+#create zscores of log transformed rpkms
+zs = t(scale(t(log2(rpkm+1))))
+ # before log scaling the median is always about -0.2, meaning theres a negative bias to the values
+summary(zs) # the median is more variable between timepoints upon log scaling
+
+#create vector for ordering
+#order = as.vector(zs[,"day15"] - zs[,"day.2"])
+order = apply(zs, 1, cor, y=1:ncol(zs)) #uses pearson correlation
+head(order)
+```
+
+
+## Supp Figure 6b
+```{r FigureS6b}
+
+Heatmap(as.matrix(zs[rownames(zs) %in% cyt_ribosome$external_gene_name,]),
+        cluster_columns = F,
+        name="Relative FPKM",
+        column_title = "Cytosolic Ribosomal Proteins",
+        col=circlize::colorRamp2(c(-1.5,0,1.5),c(rgb(0.2,0.6,1),rgb(0,0,0),rgb(0.95,0.3,0.3))),
+        show_row_names = T, row_names_gp = gpar(fontsize=8),
+        row_dend_reorder = order[rownames(zs) %in% cyt_ribosome$external_gene_name], 
+        column_split = c("D07","D07","D13","D13"), column_gap = unit(3, "mm"))
+```
+
+## Other heatmaps
+```{r ribogen}
+Heatmap(as.matrix(zs[rownames(zs) %in% ribogen$external_gene_name,]),
+        cluster_columns = F,
+        name="Relative FPKM",
+        column_title = "Ribosome Biogenesis",
+        col=circlize::colorRamp2(c(-1.5,0,1.5),c(rgb(0.2,0.6,1),rgb(0,0,0),rgb(0.95,0.3,0.3))),
+        show_row_names = T, row_names_gp = gpar(fontsize=8),
+        row_dend_reorder = order[rownames(zs) %in% ribogen$external_gene_name], 
+        row_split=4, column_split = c("D07","D07","D13","D13"), column_gap = unit(3, "mm"),
+        )
+```
+
+```{r trans}
+Heatmap(as.matrix(zs[rownames(zs) %in% translation$external_gene_name,]),
+        cluster_columns = F,
+        name="Relative FPKM",
+        column_title = "Translation",
+        col=circlize::colorRamp2(c(-1.5,0,1.5),c(rgb(0.2,0.6,1),rgb(0,0,0),rgb(0.95,0.3,0.3))),
+        show_row_names = T, row_names_gp = gpar(fontsize=8),
+        row_dend_reorder = order[rownames(zs) %in% translation$external_gene_name], 
+        row_split=2, column_split = c("D07","D07","D13","D13"), column_gap = unit(3, "mm"))
+
+Heatmap(as.matrix(zs[rownames(zs) %in% translation$external_gene_name,]),
+        cluster_columns = F,
+        name="Relative FPKM",
+        column_title = "Translation",
+        col=circlize::colorRamp2(c(-1.5,0,1.5),c(rgb(0.2,0.6,1),rgb(0,0,0),rgb(0.95,0.3,0.3))),
+        show_row_names = T, row_names_gp = gpar(fontsize=8),
+        row_dend_reorder = order[rownames(zs) %in% translation$external_gene_name], 
+        row_split=3, column_split = c("D07","D07","D13","D13"), column_gap = unit(3, "mm"))
+```
+
+
+

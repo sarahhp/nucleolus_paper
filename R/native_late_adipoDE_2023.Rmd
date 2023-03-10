@@ -220,8 +220,8 @@ all = all[order(all$adj.P.Val, -(all$B)),]
 head(all)
 ```
 
-```{r eval=F}
-write.table(all,"../03limma/day15_bulk.v.float.tab"), 
+```{r}
+write.table(all,"../03limma/day15_bulk.v.float.tab", 
             sep="\t", row.names=F, quote=F)
 ```
 
