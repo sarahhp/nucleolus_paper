@@ -59,17 +59,11 @@ colnames(d2_tab) =  gsub("output.01hisat.","", gsub(".sorted.bam","",colnames(d2
 Load file with sample info and match sample information to columns in FC table
 ```{r}
 d2_info = read.delim("../sample_info/donor2_info.csv", header=TRUE, stringsAsFactors = FALSE, sep = ",")
-#head(d2_info)
-
-#remove unnecessary columns from d2_info
-names(d2_info)[names(d2_info)=='Additional..fill.in.2.3.digits.code..max.5..construct.etc..'] = 'donor'
-names(d2_info)[names(d2_info)=='Replicate..fill.in.number.'] = 'biorep'
-names(d2_info)[names(d2_info)=='timept'] = 'time'
-d2_info = d2_info[c('sample_id','time','donor','biorep','Tube.Label')]
+d2_info$Tube.Label = NULL
+head(d2_info)
 
 #Checked that FC table and d2_info are in the same order
-#colnames(d2_tab)
-#d2_info$sample_id
+sum(colnames(d2_tab)[7:ncol(d2_tab)] == d2_info$sample_id) == nrow(d2_info)
 ```
 
 ## Load the Donor 1 timecourse: 
@@ -80,19 +74,13 @@ d1_tab = read.geo(d1_file)
 colnames(d1_tab) =  gsub("output.01hisat.","", gsub(".sorted.bam","",colnames(d1_tab)))
 head(d1_tab)
 
-#Remove the file system artefacts from the count column names to create a list of the libraries:
-sample_id = grep("[[:digit:]]",colnames(d1_tab), value = T)
-sample_id
-#Next create a sample table with information about samples and time points taken from the filenames.
-Tube.Label = gsub("\\..*_S[[:digit:]]+", "", sample_id)
-time = gsub(".*(KD|P)[43586]D?", "", gsub("_S.*","",sample_id))
-time = factor(gsub("NT","-2",time)) #match factors
-biorep = gsub(".*\\.(KD|P)", "P", gsub("(D[0139]|NT)_S.*","",sample_id))
-biorep =gsub("P3","P8",biorep) #fix biorep error
-donor = rep("D1G", 16)
 
-d1_info = data.frame(sample_id,time,donor,biorep,Tube.Label)
-d1_info
+d1_info = read.delim("../sample_info/donor1_info.csv", header=TRUE, stringsAsFactors = FALSE, sep = ",")
+d1_info = d1_info[order(d1_info$sample_id),]
+head(d1_info)
+
+#Checked that FC table and d1_info are in the same order
+sum(colnames(d1_tab)[7:ncol(d1_tab)] == d1_info$sample_id) == nrow(d1_info)
 ```
 
 ## Load New Samples (day 15)
@@ -108,18 +96,18 @@ colnames(day15_tab)
 day15_info = read.delim("../sample_info/day15_bulk_v_float_info.csv", header=T, sep=",")
 day15_info$sample_id = gsub("-",".", day15_info$sample_id)
 day15_info$time = factor(gsub("D","", day15_info$time))
-colnames(day15_info) = gsub("rep", "biorep", colnames(day15_info))
 #use cell_type column as experiment delimiter
 day15_info$exp = 3
 
 day15_info = day15_info[!(colnames(day15_info) %in% c("bio.condition"))]
 
-colnames(day15_info); day15_info$sample_id
+#Checke that FC table and d1_info are in the same order
+sum(colnames(day15_tab)[7:ncol(day15_tab)] == day15_info$sample_id) == nrow(day15_info)
 ```
 Edits to day15 file to fit: 
 - remove D from time; add dash to donor
-- change column names: rep to biorep; cell_type to exp
-- remove researcher,  bio.condition
+- change column names: cell_type to exp
+- remove bio.condition
 
 ## Merge read counts and sample info
 Merging the fc tables directly.  Merge sample information for d1 and d2; remove tube.label column, add exp column (since d1 and d2 have overlapping samples) and add separaion = bulk for these experiments.
@@ -283,20 +271,28 @@ filt_series$genes = merge(filt_series$genes, annot, by.x= "Geneid",
 filt_series$genes$Length = as.numeric(filt_series$genes$Length)
 ```
 
+
 ## Calculate FPKM
 
 ```{r}
 rpkm = as.data.frame(rpkm(filt_series, normalized.lib.sizes = T))
 rpkm$gene = rownames(rpkm)
-colnames(rpkm) = paste("day",filt_series$samples$group, "_rep",filt_series$samples$biorep, sep="")
-head(rpkm)
+colnames(rpkm) = paste("D", 
+                       gsub("D(1|2)","",filt_series$samples$group),
+                       "_rep",filt_series$samples$rep, sep="")
+custom_order = gsub("[[:alpha:]]*","", gsub("\\.(A|G).*","",colnames(rpkm)))
+rpkm = rpkm[order(as.integer(custom_order), colnames(rpkm))]
 
-rpkm = rpkm[order(colnames(rpkm))]
+
+
+colnames(rpkm) = gsub("D-2", "PROLIF",colnames(rpkm))
+head(rpkm)
 
 format_rpkm = merge(filt_series$genes, rpkm,  
                     by.x="Geneid", by.y = 'row.names',sort=FALSE)
 head(format_rpkm)
 ```
+
 
 ```{r}
 write.table(format_rpkm, sep='\t', row.names = FALSE,quote = F,
