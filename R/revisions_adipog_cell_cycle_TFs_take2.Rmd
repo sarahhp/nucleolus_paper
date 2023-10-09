@@ -1,0 +1,148 @@
+---
+title: "revisions_adipog_cell_cycle_TFs_take2"
+author: "Sarah Hp"
+date: "2023-06-14"
+output: pdf_document
+---
+
+Relies on:
+
+```{r message=FALSE, warning=FALSE}
+library(biomaRt)
+library(ComplexHeatmap)
+library(circlize)
+library(GSVA)
+library(GSEABase)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(clusterProfiler)
+```
+
+```{r}
+knitr::opts_chunk$set(echo = TRUE, dev = c("pdf"), fig.path = "heatmaps_adipogenesis_take2/")
+```
+
+```{r}
+rpkm = read.delim("C:/Users/sarahhp/OneDrive - Universitetet i Oslo/Projects/dunia's_nucleolus_paper/nucleolus_paper/03limma/adipogenesis_rpkm_tmm_means.tab", header=T) #rpkm table
+head(rpkm); dim(rpkm)
+```
+
+```{r}
+combpval = read.delim("C:/Users/sarahhp/OneDrive - Universitetet i Oslo/Projects/dunia's_nucleolus_paper/nucleolus_paper/03limma/nucleolus_adipogenesis_DE.tab", header=T)
+head(combpval)
+```
+
+```{r}
+sig = merge(rpkm, combpval[c("gene_name","adj.P.Val")])
+head(sig); dim(sig)
+```
+formating...
+```{r}
+sig = sig[!duplicated(sig$gene_name),]
+dim(sig)
+rownames(sig) = sig$gene_name
+sig$gene_name = NULL
+#select time points
+sig = sig[!grepl("floating", colnames(sig))]
+head(sig)
+sig = sig[grepl("day(.2|0|3|15)", colnames(sig))]
+# check for zeroes
+summary(rowSums(sig) > 0)#there are none
+#separate by donor
+d1 = sig[grep("D1G", colnames(sig), value=T)]
+head(d1)
+d2 = sig[grep("D2A", colnames(sig), value=T)]
+head(d2)
+```
+
+## Get terms
+
+```{r}
+molsig_list <- GSEABase::getGmt("C:/Users/sarahhp/OneDrive - Universitetet i Oslo/Projects/dunia's_nucleolus_paper/nucleolus_paper/sample_info/msigdb.v7.4.symbols.gmt")
+molsig_list
+
+##Pick gene sets to look in bcos all in a lot
+key_terms = c("HALLMARK_ADIPOGENESIS","GOBP_MITOTIC_CELL_CYCLE_ARREST", "GOBP_MITOTIC_CELL_CYCLE")
+selected = molsig_list[names(molsig_list) %in% key_terms,]
+selected
+rm(molsig_list)
+```
+
+
+## Donor 1
+### heatmap formatting
+```{r}
+colnames(d1) = gsub(".D1G.bulk","", colnames(d1))
+d1 = d1[rowSums(d1) > 0,] #remove zeroes
+d1 = d1[c("day.2","day0","day3","day15")]
+zs = t(scale(t(log2(d1+1))))
+summary(zs)
+```
+
+## Adipogenesis Heatmap
+
+Showing DE genes for hallmark adipogenesis
+```{r d1_adipo}
+Heatmap(as.matrix(zs[rownames(zs) %in% geneIds(selected)$HALLMARK_ADIPOGENESIS & 
+                       rownames(zs) %in% combpval$gene_name[combpval$adj.P.Val < 0.01],]),
+  cluster_columns = F,
+  name="Relative FPKM", column_title = "Hallmark Adipogenesis",
+  col=circlize::colorRamp2(c(-2,0,2),c(rgb(0.2,0.3,0.6),rgb(1,1,1),rgb(0.9,0.1,0.1))),
+  show_row_names = F)
+```
+## TF Heatmap
+And for Key Adipogenesis regulators
+```{r d1_tfs}
+Heatmap(as.matrix(zs[rownames(zs) %in% c("PPARG","CEBPA","CEBPB","CEBPD"),]),
+  cluster_columns = F,
+  name="Relative FPKM", column_title = "Adipogenic TFs",
+  col=circlize::colorRamp2(c(-2,0,2),c(rgb(0.2,0.3,0.6),rgb(1,1,1),rgb(0.9,0.1,0.1))))
+```
+
+## Average Gene set Expression
+
+```{r}
+d1va = gsva(as.matrix(d1), selected)
+```
+
+```{r d1_gsva}
+Heatmap(d1va, cluster_columns = F, show_row_dend = F, col = colorRamp2(c(min(d1va),0, max(d1va)), c("green4","white","purple4")),
+        name="GSVA enrichment score", row_title = "Gene Sets",column_title = "Time point",column_title_side = "bottom")
+```
+
+## D2
+
+```{r}
+colnames(d2) = gsub(".D2A.bulk","", colnames(d2))
+d2 = d2[rowSums(d2) > 0,] #remove zeroes
+d2 = d2[c("day.2","day0","day3","day15")]
+zs2 = t(scale(t(log2(d2+1))))
+summary(zs2)
+```
+```{r d2_adipo}
+Heatmap(as.matrix(zs2[rownames(zs2) %in% geneIds(selected)$HALLMARK_ADIPOGENESIS & 
+                       rownames(zs2) %in% combpval$gene_name[combpval$adj.P.Val < 0.01],]),
+  cluster_columns = F,
+  name="Relative FPKM", column_title = "Hallmark Adipogenesis",
+  col=circlize::colorRamp2(c(-2,0,2),c(rgb(0.2,0.3,0.6),rgb(1,1,1),rgb(0.9,0.1,0.1))),
+  show_row_names = F)
+```
+
+```{r d2_tfs}
+Heatmap(as.matrix(zs2[rownames(zs2) %in% c("PPARG","CEBPA","CEBPB","CEBPD"),]),
+  cluster_columns = F,
+  name="Relative FPKM", column_title = "Adipogenic TFs",
+  col=circlize::colorRamp2(c(-2,0,2),c(rgb(0.2,0.3,0.6),rgb(1,1,1),rgb(0.9,0.1,0.1))))
+```
+
+## Average Gene set Expression
+
+```{r}
+d2va = gsva(as.matrix(d2), selected)
+```
+
+```{r d2_gsva}
+Heatmap(d2va, cluster_columns = F, show_row_dend = F, col = colorRamp2(c(min(d2va),0, max(d2va)), c("green4","white","purple4")),
+        name="GSVA enrichment score", row_title = "Gene Sets",column_title = "Time point",column_title_side = "bottom")
+```
